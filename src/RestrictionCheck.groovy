@@ -13,9 +13,14 @@ if (!pageRef) {
 
 def doc = wiki.getDocument(pageRef)
 if (doc == null || doc.isNew()) {
-    println JsonOutput.toJson([level: "none", subjects: []])
+    println JsonOutput.toJson([level: "none", subjects: [], debug: "doc not found: " + pageRef])
     return
 }
+
+// Debug info
+def debugSpace = doc.space
+def debugFullName = doc.fullName
+def debugName = doc.name
 
 def hasView = false
 def hasEdit = false
@@ -28,12 +33,13 @@ def parseRights = { rightsList ->
     if (!rightsList) return
     rightsList.each { obj ->
         if (obj == null) return
-        def levels = obj.get("levels") ?: ""
-        def groups = obj.get("groups") ?: ""
-        def users = obj.get("users") ?: ""
-        def allow = obj.getIntValue("allow", 1)
+        def levels = (obj.get("levels") ?: obj.getStringValue("levels") ?: "").toString()
+        def groups = (obj.get("groups") ?: obj.getStringValue("groups") ?: "").toString()
+        def users = (obj.get("users") ?: obj.getStringValue("users") ?: "").toString()
+        def allow = 1
+        try { allow = obj.getIntValue("allow", 1) } catch (e) { allow = 1 }
 
-        if (allow == 1) {
+        if (allow == 1 || allow == true) {
             if (levels.contains("view")) hasView = true
             if (levels.contains("edit")) hasEdit = true
 
@@ -67,17 +73,57 @@ if (pageRights && !pageRights.isEmpty()) {
 if (!hasView && !hasEdit) {
     try {
         def spaceName = doc.space
-        def webPrefRef = spaceName + ".WebPreferences"
-        def webPrefDoc = wiki.getDocument(webPrefRef)
+        // In xWiki API, WebPreferences is accessed as a page within the space
+        def webPrefDoc = wiki.getDocument(spaceName + ".WebPreferences")
+        
+        // If not found, try without the space prefix (for top-level spaces)
+        if (webPrefDoc == null || webPrefDoc.isNew()) {
+            webPrefDoc = wiki.getDocument("${spaceName}.WebPreferences")
+        }
+        
         if (webPrefDoc != null && !webPrefDoc.isNew()) {
             def spaceRights = webPrefDoc.getObjects("XWiki.XWikiGlobalRights")
-            if (spaceRights && !spaceRights.isEmpty()) {
-                parseRights(spaceRights)
+            def spaceRightsCount = spaceRights ? spaceRights.size() : 0
+            debugSpace = debugSpace + " | webPref found, rights count: " + spaceRightsCount
+            if (spaceRights) {
+                spaceRights.each { obj ->
+                    if (obj == null) return
+                    def levels = (obj.get("levels") ?: "").toString()
+                    def groups = (obj.get("groups") ?: "").toString()
+                    def users = (obj.get("users") ?: "").toString()
+                    def allow = 1
+                    try { allow = obj.getIntValue("allow", 1) } catch (e) {}
+                    
+                    if (allow == 1 && (levels.contains("view") || levels.contains("edit"))) {
+                        if (levels.contains("view")) hasView = true
+                        if (levels.contains("edit")) hasEdit = true
+                        if (users) {
+                            users.split(",").each { u ->
+                                def name = u.trim().replaceAll("XWiki\\.", "")
+                                if (name) { subjects << [type: "user", name: name]; if (!restrictedBy) restrictedBy = name }
+                            }
+                        }
+                        if (groups) {
+                            groups.split(",").each { g ->
+                                def name = g.trim().replaceAll("XWiki\\.", "")
+                                if (name && name != "XWikiAdminGroup") subjects << [type: "group", name: name]
+                            }
+                        }
+                    }
+                }
                 if (hasView || hasEdit) restrictionSource = "space"
+            }
+            // Also check XWiki.XWikiRights on WebPreferences (some versions use this)
+            if (!hasView && !hasEdit) {
+                def altRights = webPrefDoc.getObjects("XWiki.XWikiRights")
+                if (altRights && !altRights.isEmpty()) {
+                    parseRights(altRights)
+                    if (hasView || hasEdit) restrictionSource = "space"
+                }
             }
         }
     } catch (e) {
-        // Ignore errors checking space rights
+        // Ignore errors
     }
 }
 
@@ -115,7 +161,7 @@ def uniqueSubjects = subjects.unique { it.type + ":" + it.name }
 
 println JsonOutput.toJson([
     level: level,
-    subjects: uniqueSubjects,
+    subjects: uniqueSubjects.findAll { it.name },
     page: pageRef,
     source: restrictionSource,
     restrictedBy: restrictedBy

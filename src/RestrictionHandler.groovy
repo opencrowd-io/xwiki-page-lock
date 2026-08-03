@@ -21,6 +21,7 @@ def params = new JsonSlurper().parseText(body)
 def pageRef = params.page
 def mode = params.mode
 def subjects = params.subjects ?: []
+def targetLevel = params.targetLevel ?: "auto" // "page", "space", or "auto"
 
 if (!pageRef || !mode) {
     println JsonOutput.toJson([success: false, error: "Missing page or mode"])
@@ -44,23 +45,43 @@ if (mode == "full" && !doc.hasAccessLevel("admin")) {
     return
 }
 
-// Determine target for rights
-def isSpaceHome = doc.name == "WebHome"
-def rightsClass = isSpaceHome ? "XWiki.XWikiGlobalRights" : "XWiki.XWikiRights"
-def targetDoc = isSpaceHome ? wiki.getDocument(doc.space + ".WebPreferences") : doc
+// Determine target: always manage the space-level WebPreferences
+// This ensures restrictions work for both the page and its children
+def spaceName = doc.space
+def webPrefRef = spaceName + ".WebPreferences"
+def webPrefDoc = wiki.getDocument(webPrefRef)
 
-// Remove existing rights objects
+// For page-level, use the page itself
+def isSpaceLevel = (doc.name == "WebHome" || targetLevel == "space")
+def rightsClass = isSpaceLevel ? "XWiki.XWikiGlobalRights" : "XWiki.XWikiRights"
+def targetDoc = isSpaceLevel ? webPrefDoc : doc
+
+// Also clean space-level rights if we're removing all restrictions
+if (mode == "none") {
+    // Remove page-level rights
+    def pageRights = doc.getObjects("XWiki.XWikiRights")
+    if (pageRights) {
+        pageRights.each { obj -> if (obj != null) doc.removeObject(obj) }
+        doc.save("Page restrictions removed via Lock extension")
+    }
+    // Remove space-level rights
+    if (webPrefDoc != null && !webPrefDoc.isNew()) {
+        def spaceRights = webPrefDoc.getObjects("XWiki.XWikiGlobalRights")
+        if (spaceRights) {
+            spaceRights.each { obj -> if (obj != null) webPrefDoc.removeObject(obj) }
+            webPrefDoc.save("Space restrictions removed via Lock extension")
+        }
+    }
+    println JsonOutput.toJson([success: true, message: "All restrictions removed", level: "none"])
+    return
+}
+
+// Remove existing rights on the target
 def existingObjects = targetDoc.getObjects(rightsClass)
 if (existingObjects) {
     existingObjects.each { obj ->
         if (obj != null) targetDoc.removeObject(obj)
     }
-}
-
-if (mode == "none") {
-    targetDoc.save("Restrictions removed via Lock extension")
-    println JsonOutput.toJson([success: true, message: "Restrictions removed", level: "none"])
-    return
 }
 
 // Build subjects list
@@ -97,4 +118,4 @@ rightsObj.set("allow", 1)
 
 targetDoc.save("Restrictions applied via Lock extension (mode: ${mode})")
 
-println JsonOutput.toJson([success: true, message: "Restrictions applied", level: mode, isSpaceLevel: isSpaceHome])
+println JsonOutput.toJson([success: true, message: "Restrictions applied", level: mode, isSpaceLevel: isSpaceLevel])

@@ -11,6 +11,7 @@
         ? XWiki.Model.serialize(XWiki.currentDocument.documentReference) : '';
     var currentLevel = 'none';
     var currentSubjects = [];
+    var currentSource = 'none'; // 'page', 'space', 'parent-space'
 
     // --- Icon in page header (like Confluence's padlock next to breadcrumb) ---
     function createIcon() {
@@ -63,9 +64,10 @@
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 currentLevel = data.level || 'none';
-                currentSubjects = data.subjects || [];
+                currentSource = data.source || 'none';
+                // Filter out subjects with empty names
+                currentSubjects = (data.subjects || []).filter(function(s) { return s.name && s.name.trim() !== ''; });
                 updateIcon(currentLevel);
-                // Update tooltip with who restricted
                 var btn = document.getElementById('xwiki-lock-icon');
                 if (btn && data.restrictedBy && data.level !== 'none') {
                     var source = data.source === 'space' ? ' (space-level)' : data.source === 'parent-space' ? ' (inherited)' : '';
@@ -92,7 +94,9 @@
             '<div style="display:flex;align-items:center;justify-content:space-between;">' +
             '<h2 style="margin:0;font-size:20px;font-weight:600;color:#172b4d;">Restrictions</h2>' +
             '<button id="lock-close" style="background:none;border:none;font-size:20px;cursor:pointer;color:#666;">\u2715</button>' +
-            '</div></div>';
+            '</div>' +
+            (currentSource === 'space' || currentSource === 'parent-space' ? '<p style="margin:8px 0 0;font-size:12px;color:#de350b;background:#fff3f3;padding:8px 12px;border-radius:4px;">⚠️ This page inherits restrictions from its parent space. To change, edit the space permissions in xWiki Administration.</p>' : '') +
+            '</div>';
 
         // Mode selector (Confluence-style colored dropdown)
         var modeColors = { none: '#0052CC', edit: '#FF991F', full: '#DE350B' };
@@ -168,10 +172,77 @@
         });
 
         document.getElementById('lock-search').addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') { e.preventDefault(); document.getElementById('lock-add-btn').click(); }
+            if (e.key === 'Enter') { e.preventDefault(); document.getElementById('lock-add-btn').click(); hideAutocomplete(); }
+        });
+
+        // Autocomplete — search as user types
+        var searchTimeout;
+        document.getElementById('lock-search').addEventListener('input', function() {
+            var query = this.value.trim();
+            clearTimeout(searchTimeout);
+            if (query.length < 2) { hideAutocomplete(); return; }
+            searchTimeout = setTimeout(function() { searchUsers(query); }, 300);
         });
 
         renderSubjects();
+    }
+
+    function hideAutocomplete() {
+        var ac = document.getElementById('lock-autocomplete');
+        if (ac) ac.style.display = 'none';
+    }
+
+    function searchUsers(query) {
+        // List all pages in XWiki space and filter by query
+        fetch('/rest/wikis/xwiki/spaces/XWiki/pages?number=50')
+            .then(function(r) { return r.text(); })
+            .then(function(text) {
+                var results = [];
+                var matches = text.match(/<name>([^<]+)<\/name>/g) || [];
+                var q = query.toLowerCase();
+                matches.forEach(function(m) {
+                    var name = m.replace('<name>', '').replace('</name>', '');
+                    if (name && name.toLowerCase().indexOf(q) >= 0 && name !== 'WebHome' && name !== 'WebPreferences') {
+                        var isGroup = name.toLowerCase().includes('group') || name.toLowerCase().includes('managers') || name.toLowerCase().includes('users');
+                        results.push({ type: isGroup ? 'group' : 'user', name: name });
+                    }
+                });
+                showAutocomplete(results.slice(0, 8));
+            })
+            .catch(function() {});
+    }
+
+    function showAutocomplete(results) {
+        var container = document.getElementById('lock-autocomplete');
+        if (!container) {
+            container = document.createElement('div');
+            container.id = 'lock-autocomplete';
+            container.style.cssText = 'position:absolute;left:0;right:0;top:100%;background:#fff;border:1px solid #dfe1e6;border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,0.15);max-height:200px;overflow-y:auto;z-index:10;';
+            var searchParent = document.getElementById('lock-search').parentElement;
+            searchParent.style.position = 'relative';
+            searchParent.appendChild(container);
+        }
+        if (results.length === 0) { container.style.display = 'none'; return; }
+        container.style.display = 'block';
+        container.innerHTML = '';
+        results.forEach(function(r) {
+            var item = document.createElement('div');
+            item.style.cssText = 'padding:8px 12px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:8px;border-bottom:1px solid #f4f5f7;';
+            var icon = r.type === 'group'
+                ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0052CC" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 12 0v1"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>'
+                : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0052CC" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 12 0v1"/></svg>';
+            item.innerHTML = icon + '<span>' + r.name + '</span><span style="color:#6b778c;font-size:11px;margin-left:auto;">' + r.type + '</span>';
+            item.addEventListener('click', function() {
+                var level = document.getElementById('lock-add-level').value;
+                currentSubjects.push({ type: r.type, name: r.name, level: level });
+                document.getElementById('lock-search').value = '';
+                hideAutocomplete();
+                renderSubjects();
+            });
+            item.addEventListener('mouseenter', function() { item.style.background = '#f4f5f7'; });
+            item.addEventListener('mouseleave', function() { item.style.background = ''; });
+            container.appendChild(item);
+        });
     }
 
     function renderSubjects() {
