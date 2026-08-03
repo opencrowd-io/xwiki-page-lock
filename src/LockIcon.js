@@ -61,7 +61,17 @@
         if (!pageRef) return;
         fetch(CHECK_URL + '&page=' + encodeURIComponent(pageRef))
             .then(function(r) { return r.json(); })
-            .then(function(data) { currentLevel = data.level || 'none'; currentSubjects = data.subjects || []; updateIcon(currentLevel); })
+            .then(function(data) {
+                currentLevel = data.level || 'none';
+                currentSubjects = data.subjects || [];
+                updateIcon(currentLevel);
+                // Update tooltip with who restricted
+                var btn = document.getElementById('xwiki-lock-icon');
+                if (btn && data.restrictedBy && data.level !== 'none') {
+                    var source = data.source === 'space' ? ' (space-level)' : data.source === 'parent-space' ? ' (inherited)' : '';
+                    btn.title = (data.level === 'edit' ? 'Editing restricted' : 'Viewing and editing restricted') + ' by ' + data.restrictedBy + source;
+                }
+            })
             .catch(function() { updateIcon('none'); });
     }
 
